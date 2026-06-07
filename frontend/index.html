@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>实验室样本流转工作台</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="app">
+        <header class="header">
+            <div class="logo">
+                <span class="logo-icon">🧪</span>
+                <h1>实验室样本流转工作台</h1>
+            </div>
+            <div class="header-right">
+                <div class="user-select">
+                    <label>当前操作员:</label>
+                    <select id="currentUser"></select>
+                </div>
+                <div class="refresh-btn" onclick="loadAllData()">
+                    <span>🔄</span> 刷新
+                </div>
+            </div>
+        </header>
+
+        <div class="main-container">
+            <aside class="sidebar">
+                <div class="stats-card">
+                    <h3>📊 统计概览</h3>
+                    <div class="stat-item pending">
+                        <span class="stat-label">待处理总数</span>
+                        <span class="stat-value" id="pendingCount">0</span>
+                    </div>
+                    <div class="stat-item rejected">
+                        <span class="stat-label">异常驳回</span>
+                        <span class="stat-value" id="rejectedCount">0</span>
+                    </div>
+                </div>
+
+                <div class="filter-card">
+                    <h3>🔍 筛选条件</h3>
+                    <div class="filter-group">
+                        <label>按批次筛选</label>
+                        <select id="batchFilter">
+                            <option value="">全部批次</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>按状态筛选</label>
+                        <select id="stateFilter">
+                            <option value="">全部状态</option>
+                            <option value="pending">仅待处理</option>
+                            <option value="REGISTERED">已登记</option>
+                            <option value="RECEIVED">已接收</option>
+                            <option value="TESTING">检测中</option>
+                            <option value="REVIEWING">复核中</option>
+                            <option value="REJECTED">已驳回</option>
+                            <option value="ARCHIVED">已归档</option>
+                            <option value="CANCELLED">已作废</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="quick-actions">
+                    <h3>⚡ 快捷操作</h3>
+                    <button class="action-btn primary" onclick="showRegisterModal()">+ 登记新样本</button>
+                    <button class="action-btn secondary" onclick="showReceiveModal()">📦 按批次接收</button>
+                </div>
+
+                <div class="permissions-card">
+                    <h3>🔐 我的权限</h3>
+                    <div id="permissionList"></div>
+                </div>
+
+                <div class="legend-card">
+                    <h3>📋 状态图例</h3>
+                    <div class="legend-item">
+                        <span class="status-badge registered">已登记</span>
+                        <span>待接收</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="status-badge received">已接收</span>
+                        <span>可检测</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="status-badge testing">检测中</span>
+                        <span>检测中</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="status-badge reviewing">复核中</span>
+                        <span>待复核</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="status-badge rejected">已驳回</span>
+                        <span>需处理</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="status-badge archived">已归档</span>
+                        <span>完成</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="status-badge cancelled">已作废</span>
+                        <span>终止</span>
+                    </div>
+                </div>
+            </aside>
+
+            <main class="content">
+                <div class="processing-list">
+                    <h3>📝 处理清单 <span class="subtitle">(按角色展示可操作样本)</span></h3>
+                    <div class="table-container">
+                        <table class="samples-table">
+                            <thead>
+                                <tr>
+                                    <th>样本编号</th>
+                                    <th>批次号</th>
+                                    <th>样本类型</th>
+                                    <th>当前状态</th>
+                                    <th>登记人</th>
+                                    <th>最近处理人</th>
+                                    <th>最近处理时间</th>
+                                    <th>异常原因</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="samplesTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <div class="modal" id="detailModal">
+        <div class="modal-content large">
+            <div class="modal-header">
+                <h2 id="detailTitle">样本详情</h2>
+                <button class="close-btn" onclick="closeModal('detailModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="detail-grid">
+                    <div class="detail-info">
+                        <h3>📋 基本信息</h3>
+                        <div class="info-row"><span class="label">样本编号:</span> <span id="detailSampleNo"></span></div>
+                        <div class="info-row"><span class="label">批次号:</span> <span id="detailBatchNo"></span></div>
+                        <div class="info-row"><span class="label">样本类型:</span> <span id="detailSampleType"></span></div>
+                        <div class="info-row"><span class="label">描述:</span> <span id="detailDesc"></span></div>
+                        <div class="info-row"><span class="label">当前状态:</span> <span id="detailState"></span></div>
+                        <div class="info-row"><span class="label">登记人:</span> <span id="detailRegBy"></span></div>
+                        <div class="info-row"><span class="label">登记时间:</span> <span id="detailRegAt"></span></div>
+                        <div class="info-row"><span class="label">最近处理人:</span> <span id="detailLastBy"></span></div>
+                        <div class="info-row"><span class="label">最近处理时间:</span> <span id="detailLastAt"></span></div>
+
+                        <div class="detail-actions">
+                            <h3>⚙️ 可执行操作</h3>
+                            <div id="detailActions"></div>
+                        </div>
+
+                        <div class="export-actions">
+                            <h3>📤 导出审计</h3>
+                            <button class="action-btn small" onclick="exportAudit('sample')">导出样本审计</button>
+                            <button class="action-btn small secondary" onclick="exportAudit('batch')">导出批次审计</button>
+                        </div>
+                    </div>
+                    <div class="detail-timeline">
+                        <h3>⏱️ 流转时间线</h3>
+                        <div class="timeline" id="timeline"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="registerModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>登记新样本</h2>
+                <button class="close-btn" onclick="closeModal('registerModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>样本编号 *</label>
+                    <input type="text" id="regSampleNo" placeholder="如: S009">
+                    <span class="error" id="regSampleNoError"></span>
+                </div>
+                <div class="form-group">
+                    <label>批次号 *</label>
+                    <input type="text" id="regBatchNo" placeholder="如: BATCH-2026-004">
+                </div>
+                <div class="form-group">
+                    <label>样本类型 *</label>
+                    <select id="regSampleType">
+                        <option value="血液样本">血液样本</option>
+                        <option value="尿液样本">尿液样本</option>
+                        <option value="粪便样本">粪便样本</option>
+                        <option value="唾液样本">唾液样本</option>
+                        <option value="组织样本">组织样本</option>
+                        <option value="其他">其他</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <textarea id="regDesc" rows="3" placeholder="可选，样本来源或说明"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button class="action-btn secondary" onclick="closeModal('registerModal')">取消</button>
+                    <button class="action-btn primary" onclick="registerSample()">登记</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="receiveModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>按批次接收</h2>
+                <button class="close-btn" onclick="closeModal('receiveModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>批次号 *</label>
+                    <input type="text" id="receiveBatchNo" placeholder="输入批次号">
+                </div>
+                <div class="form-group">
+                    <label>接收说明</label>
+                    <input type="text" id="receiveReason" value="批次接收" placeholder="接收原因说明">
+                </div>
+                <div class="form-actions">
+                    <button class="action-btn secondary" onclick="closeModal('receiveModal')">取消</button>
+                    <button class="action-btn primary" onclick="receiveBatch()">接收</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="actionModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="actionTitle">操作确认</h2>
+                <button class="close-btn" onclick="closeModal('actionModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="actionDesc"></p>
+                <div class="form-group" id="reasonGroup">
+                    <label id="reasonLabel">原因 *</label>
+                    <textarea id="actionReason" rows="3" placeholder="请输入原因"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button class="action-btn secondary" onclick="closeModal('actionModal')">取消</button>
+                    <button class="action-btn primary" id="actionConfirmBtn">确认</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>
