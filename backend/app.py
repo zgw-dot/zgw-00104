@@ -33,9 +33,9 @@ def get_sample(sample_id):
 
 
 def add_event(sample_id, from_state, to_state, operator_id, reason, event_type,
-              is_correction=0, corrected_event_id=None):
-    with get_db() as conn:
-        c = conn.cursor()
+              is_correction=0, corrected_event_id=None, conn=None):
+    def _do_event(db_conn):
+        c = db_conn.cursor()
         c.execute('''INSERT INTO events 
             (sample_id, from_state, to_state, operator_id, reason, event_type,
              is_correction, corrected_event_id, created_at)
@@ -50,6 +50,11 @@ def add_event(sample_id, from_state, to_state, operator_id, reason, event_type,
             (to_state, operator_id, now(), sample_id))
 
         return event_id
+
+    if conn is not None:
+        return _do_event(conn)
+    with get_db() as db_conn:
+        return _do_event(db_conn)
 
 
 def sample_to_dict(row):
@@ -234,7 +239,7 @@ def register_sample():
             (sample_no, batch_no, sample_type, description, operator_id, now()))
         sample_id = c.lastrowid
 
-        add_event(sample_id, None, 'REGISTERED', operator_id, '样本登记', 'REGISTER')
+        add_event(sample_id, None, 'REGISTERED', operator_id, '样本登记', 'REGISTER', conn=conn)
 
     return jsonify({
         'success': True,
@@ -272,13 +277,44 @@ def receive_batch():
 
         count = 0
         for s in samples:
-            add_event(s['id'], 'REGISTERED', 'RECEIVED', operator_id, reason, 'RECEIVE')
+            add_event(s['id'], 'REGISTERED', 'RECEIVED', operator_id, reason, 'RECEIVE', conn=conn)
             count += 1
 
     return jsonify({
         'success': True,
         'count': count,
         'message': f'批次 {batch_no} 接收成功，共 {count} 个样本'
+    })
+
+
+@app.route('/api/samples/<int:sample_id>/receive', methods=['POST'])
+def receive_sample(sample_id):
+    data = request.get_json()
+    operator_id = data.get('operator_id')
+    reason = data.get('reason', '样本接收').strip()
+
+    if not operator_id:
+        return jsonify({'error': '请指定操作员'}), 400
+
+    ok, result = check_permission(operator_id, 'receive')
+    if not ok:
+        return jsonify({'error': result}), 403
+    user = result
+
+    sample = get_sample(sample_id)
+    if not sample:
+        return jsonify({'error': '样本不存在'}), 404
+
+    if sample['current_state'] != 'REGISTERED':
+        return jsonify({
+            'error': f'样本当前状态为 [{STATES[sample["current_state"]]}]，只有已登记的样本才能接收'
+        }), 400
+
+    add_event(sample_id, 'REGISTERED', 'RECEIVED', operator_id, reason, 'RECEIVE')
+
+    return jsonify({
+        'success': True,
+        'message': f'样本接收成功'
     })
 
 
@@ -482,7 +518,8 @@ def undo_sample(sample_id):
         add_event(
             sample_id, from_state, prev_state, operator_id,
             f"撤销更正：{reason}", 'UNDO',
-            is_correction=1, corrected_event_id=last_event['id'] if last_event else None
+            is_correction=1, corrected_event_id=last_event['id'] if last_event else None,
+            conn=conn
         )
 
     return jsonify({

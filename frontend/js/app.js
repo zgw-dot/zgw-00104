@@ -165,7 +165,7 @@ function getAvailableActions(sample) {
     
     if (state === 'REGISTERED') {
         if (currentPermissions.receive) {
-            actions.push({ action: 'receive', label: '接收', class: 'primary', endpoint: `test`, requiresReason: false });
+            actions.push({ action: 'receive', label: '接收', class: 'primary', endpoint: `receive`, requiresReason: false });
         }
         if (currentPermissions.cancel) {
             actions.push({ action: 'cancel', label: '作废', class: 'danger', endpoint: `cancel`, requiresReason: true });
