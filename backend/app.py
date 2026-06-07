@@ -5,7 +5,8 @@ import io
 import csv
 from database import (
     get_db, init_db, ROLES, STATES, STATE_TRANSITIONS,
-    check_permission, get_current_user, get_previous_valid_state
+    check_permission, get_current_user, get_previous_valid_state,
+    add_import_failure, get_import_failures
 )
 
 app = Flask(__name__)
@@ -698,6 +699,347 @@ def get_transitions():
     for k, v in STATE_TRANSITIONS.items():
         result[STATES[k]] = [STATES[s] for s in v]
     return jsonify(result)
+
+
+REQUIRED_COLUMNS = ['样本号', '批次号', '样本类型']
+COLUMN_ALIASES = {
+    '样本号': 'sample_no',
+    'sample_no': 'sample_no',
+    'sampleNo': 'sample_no',
+    '批次号': 'batch_no',
+    'batch_no': 'batch_no',
+    'batchNo': 'batch_no',
+    '样本类型': 'sample_type',
+    'sample_type': 'sample_type',
+    'sampleType': 'sample_type',
+    '描述': 'description',
+    'description': 'description',
+}
+
+
+def parse_csv_file(file_storage):
+    content = file_storage.read().decode('utf-8-sig')
+    reader = csv.DictReader(io.StringIO(content))
+    rows = []
+    for i, row in enumerate(reader, start=2):
+        rows.append({'row_number': i, 'data': row})
+    return rows
+
+
+def normalize_row(raw_data):
+    normalized = {}
+    for key, value in raw_data.items():
+        key_lower = key.strip().lower()
+        for alias, field in COLUMN_ALIASES.items():
+            if alias.lower() == key_lower:
+                normalized[field] = value.strip() if value else ''
+                break
+    return normalized
+
+
+def validate_row(normalized, row_number):
+    errors = []
+
+    sample_no = normalized.get('sample_no', '').strip()
+    if not sample_no:
+        errors.append({
+            'error_type': 'MISSING_REQUIRED',
+            'error_message': '样本号不能为空',
+            'row_number': row_number,
+            'sample_no': sample_no,
+            'batch_no': normalized.get('batch_no', ''),
+            'sample_type': normalized.get('sample_type', ''),
+            'description': normalized.get('description', ''),
+        })
+
+    for col, field in [('批次号', 'batch_no'), ('样本类型', 'sample_type')]:
+        val = normalized.get(field, '').strip()
+        if not val:
+            errors.append({
+                'error_type': 'MISSING_REQUIRED',
+                'error_message': f'缺少必填列或值为空: {col}',
+                'row_number': row_number,
+                'sample_no': sample_no,
+                'batch_no': normalized.get('batch_no', ''),
+                'sample_type': normalized.get('sample_type', ''),
+                'description': normalized.get('description', ''),
+            })
+
+    return errors
+
+
+@app.route('/api/samples/import', methods=['POST'])
+def import_samples():
+    operator_id = None
+    import_batch_id = f'IMP-{datetime.now().strftime("%Y%m%d%H%M%S")}-{__import__("uuid").uuid4().hex[:6].upper()}'
+
+    if 'file' in request.files:
+        file = request.files['file']
+        operator_id = request.form.get('operator_id', type=int)
+        rows = parse_csv_file(file)
+        source = 'csv_upload'
+    else:
+        data = request.get_json()
+        operator_id = data.get('operator_id')
+        rows_data = data.get('rows', [])
+        rows = []
+        for i, row in enumerate(rows_data, start=2):
+            rows.append({'row_number': i, 'data': row})
+        source = 'json_api'
+
+    if not operator_id:
+        return jsonify({'error': '请指定操作员'}), 400
+
+    ok, result = check_permission(operator_id, 'register')
+    if not ok:
+        return jsonify({'error': result}), 403
+    user = result
+
+    if not rows:
+        return jsonify({'error': '没有可导入的数据'}), 400
+
+    success_count = 0
+    failure_count = 0
+    success_items = []
+    failure_items = []
+    seen_sample_nos = set()
+
+    with get_db() as conn:
+        for row_item in rows:
+            row_number = row_item['row_number']
+            raw_data = row_item['data']
+            normalized = normalize_row(raw_data)
+
+            validation_errors = validate_row(normalized, row_number)
+            if validation_errors:
+                for err in validation_errors:
+                    add_import_failure(
+                        import_batch_id=import_batch_id,
+                        row_number=err['row_number'],
+                        sample_no=err['sample_no'],
+                        batch_no=err['batch_no'],
+                        sample_type=err['sample_type'],
+                        description=err['description'],
+                        error_type=err['error_type'],
+                        error_message=err['error_message'],
+                        operator_id=operator_id,
+                        conn=conn
+                    )
+                    failure_items.append(err)
+                    failure_count += 1
+                continue
+
+            sample_no = normalized['sample_no'].strip()
+            batch_no = normalized['batch_no'].strip()
+            sample_type = normalized['sample_type'].strip()
+            description = normalized.get('description', '').strip()
+
+            if sample_no in seen_sample_nos:
+                err = {
+                    'error_type': 'DUPLICATE_IN_FILE',
+                    'error_message': f'文件内存在重复样本号 [{sample_no}]',
+                    'row_number': row_number,
+                    'sample_no': sample_no,
+                    'batch_no': batch_no,
+                    'sample_type': sample_type,
+                    'description': description,
+                }
+                add_import_failure(
+                    import_batch_id=import_batch_id,
+                    row_number=row_number,
+                    sample_no=sample_no,
+                    batch_no=batch_no,
+                    sample_type=sample_type,
+                    description=description,
+                    error_type=err['error_type'],
+                    error_message=err['error_message'],
+                    operator_id=operator_id,
+                    conn=conn
+                )
+                failure_items.append(err)
+                failure_count += 1
+                continue
+
+            existing = get_sample_by_no(sample_no)
+            if existing:
+                err = {
+                    'error_type': 'DUPLICATE_IN_DB',
+                    'error_message': f'样本号 [{sample_no}] 已存在于数据库中',
+                    'row_number': row_number,
+                    'sample_no': sample_no,
+                    'batch_no': batch_no,
+                    'sample_type': sample_type,
+                    'description': description,
+                }
+                add_import_failure(
+                    import_batch_id=import_batch_id,
+                    row_number=row_number,
+                    sample_no=sample_no,
+                    batch_no=batch_no,
+                    sample_type=sample_type,
+                    description=description,
+                    error_type=err['error_type'],
+                    error_message=err['error_message'],
+                    operator_id=operator_id,
+                    conn=conn
+                )
+                failure_items.append(err)
+                failure_count += 1
+                continue
+
+            seen_sample_nos.add(sample_no)
+
+            try:
+                c = conn.cursor()
+                c.execute('''INSERT INTO samples 
+                    (sample_no, batch_no, sample_type, description, registered_by, registered_at)
+                    VALUES (?, ?, ?, ?, ?, ?)''',
+                    (sample_no, batch_no, sample_type, description, operator_id, now()))
+                sample_id = c.lastrowid
+
+                add_event(sample_id, None, 'REGISTERED', operator_id, 
+                         f'批量导入登记 (批次: {import_batch_id})', 'REGISTER', conn=conn)
+
+                success_count += 1
+                success_items.append({
+                    'row_number': row_number,
+                    'sample_id': sample_id,
+                    'sample_no': sample_no,
+                    'batch_no': batch_no,
+                    'sample_type': sample_type,
+                    'description': description,
+                })
+            except Exception as e:
+                err = {
+                    'error_type': 'DATABASE_ERROR',
+                    'error_message': f'数据库错误: {str(e)}',
+                    'row_number': row_number,
+                    'sample_no': sample_no,
+                    'batch_no': batch_no,
+                    'sample_type': sample_type,
+                    'description': description,
+                }
+                add_import_failure(
+                    import_batch_id=import_batch_id,
+                    row_number=row_number,
+                    sample_no=sample_no,
+                    batch_no=batch_no,
+                    sample_type=sample_type,
+                    description=description,
+                    error_type=err['error_type'],
+                    error_message=err['error_message'],
+                    operator_id=operator_id,
+                    conn=conn
+                )
+                failure_items.append(err)
+                failure_count += 1
+
+    return jsonify({
+        'success': True,
+        'import_batch_id': import_batch_id,
+        'source': source,
+        'operator_id': operator_id,
+        'operator_name': user.get('name'),
+        'total_count': len(rows),
+        'success_count': success_count,
+        'failure_count': failure_count,
+        'success_items': success_items,
+        'failure_items': failure_items,
+        'message': f'导入完成：成功 {success_count} 条，失败 {failure_count} 条'
+    })
+
+
+@app.route('/api/import/failures', methods=['GET'])
+def list_import_failures():
+    import_batch_id = request.args.get('batch_id')
+    failures = get_import_failures(import_batch_id)
+    return jsonify(failures)
+
+
+@app.route('/api/import/failures/<failure_id>', methods=['GET'])
+def get_import_failure(failure_id):
+    with get_db() as conn:
+        c = conn.cursor()
+        c.execute('''
+            SELECT f.*, u.name as operator_name, u.username as operator_username
+            FROM import_failures f
+            LEFT JOIN users u ON f.operator_id = u.id
+            WHERE f.id = ?
+        ''', (failure_id,))
+        row = c.fetchone()
+        if not row:
+            return jsonify({'error': '记录不存在'}), 404
+        return jsonify(dict(row))
+
+
+@app.route('/api/export/import/<import_batch_id>', methods=['GET'])
+def export_import_result(import_batch_id):
+    with get_db() as conn:
+        c = conn.cursor()
+
+        c.execute('''
+            SELECT f.*, u.name as operator_name
+            FROM import_failures f
+            LEFT JOIN users u ON f.operator_id = u.id
+            WHERE f.import_batch_id = ?
+            ORDER BY f.row_number
+        ''', (import_batch_id,))
+        failures = c.fetchall()
+
+        c.execute('''
+            SELECT s.id, s.sample_no, s.batch_no, s.sample_type, s.description,
+                   s.registered_at, u.name as operator_name
+            FROM samples s
+            LEFT JOIN users u ON s.registered_by = u.id
+            WHERE s.description LIKE ? OR s.id IN (
+                SELECT sample_id FROM events 
+                WHERE reason LIKE ? AND event_type = 'REGISTER'
+            )
+            ORDER BY s.id
+        ''', (f'%{import_batch_id}%', f'%{import_batch_id}%'))
+        imported_samples = c.fetchall()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([f'批量导入结果审计 - 批次 {import_batch_id}'])
+    writer.writerow([f'导出时间: {now()}'])
+    writer.writerow([])
+    writer.writerow([f'成功导入样本数: {len(imported_samples)}'])
+    writer.writerow([f'失败记录数: {len(failures)}'])
+    writer.writerow([])
+
+    writer.writerow(['=== 成功导入的样本 ==='])
+    writer.writerow(['样本ID', '样本号', '批次号', '样本类型', '描述', '登记人', '登记时间'])
+    for s in imported_samples:
+        writer.writerow([
+            s['id'], s['sample_no'], s['batch_no'], s['sample_type'],
+            s['description'] or '', s['operator_name'] or '', s['registered_at'] or ''
+        ])
+    writer.writerow([])
+
+    writer.writerow(['=== 导入失败记录 ==='])
+    writer.writerow(['行号', '样本号', '批次号', '样本类型', '描述', '错误类型', '错误信息', '操作人', '创建时间'])
+    for f in failures:
+        error_type_names = {
+            'MISSING_REQUIRED': '缺少必填项',
+            'DUPLICATE_IN_FILE': '文件内重复',
+            'DUPLICATE_IN_DB': '数据库重复',
+            'DATABASE_ERROR': '数据库错误'
+        }
+        writer.writerow([
+            f['row_number'], f['sample_no'] or '', f['batch_no'] or '',
+            f['sample_type'] or '', f['description'] or '',
+            error_type_names.get(f['error_type'], f['error_type']),
+            f['error_message'], f['operator_name'] or '', f['created_at']
+        ])
+
+    output.seek(0)
+    return send_file(
+        io.BytesIO(output.getvalue().encode('utf-8-sig')),
+        mimetype='text/csv; charset=utf-8',
+        as_attachment=True,
+        download_name=f'import_{import_batch_id}_audit.csv'
+    )
 
 
 if __name__ == '__main__':

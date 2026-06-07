@@ -28,6 +28,15 @@ const EVENT_TYPE_NAMES = {
     'RE_REGISTER': '重新登记'
 };
 
+const ERROR_TYPE_NAMES = {
+    'MISSING_REQUIRED': '缺少必填项',
+    'DUPLICATE_IN_FILE': '文件内重复',
+    'DUPLICATE_IN_DB': '数据库重复',
+    'DATABASE_ERROR': '数据库错误'
+};
+
+let currentImportResult = null;
+
 async function apiRequest(url, method = 'GET', data = null) {
     const options = {
         method,
@@ -492,6 +501,236 @@ async function loadAllData() {
         loadBatches(),
         loadSamples()
     ]);
+}
+
+function showImportModal() {
+    if (!currentPermissions.register) {
+        showToast('您没有登记样本的权限', 'error');
+        return;
+    }
+    document.getElementById('importFile').value = '';
+    document.getElementById('previewSection').style.display = 'none';
+    document.getElementById('importResult').style.display = 'none';
+    document.getElementById('importBtn').disabled = true;
+    currentImportResult = null;
+    showModal('importModal');
+}
+
+function downloadTemplate() {
+    const template = '样本号,批次号,样本类型,描述\n' +
+                    'S100,BATCH-2026-004,血液样本,常规体检样本\n' +
+                    'S101,BATCH-2026-004,尿液样本,入职体检样本\n';
+    
+    const blob = new Blob(['\ufeff' + template], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = '样本导入模板.csv';
+    link.click();
+    URL.revokeObjectURL(link.href);
+    showToast('模板已下载', 'success');
+}
+
+function parseCSV(text) {
+    const lines = text.split('\n').filter(line => line.trim());
+    if (lines.length < 1) return { headers: [], rows: [] };
+    
+    const headers = lines[0].split(',').map(h => h.trim());
+    const rows = [];
+    
+    for (let i = 1; i < lines.length; i++) {
+        const values = lines[i].split(',');
+        if (values.length >= headers.length) {
+            const row = {};
+            headers.forEach((header, idx) => {
+                row[header] = (values[idx] || '').trim();
+            });
+            rows.push(row);
+        }
+    }
+    
+    return { headers, rows };
+}
+
+function previewImport() {
+    const fileInput = document.getElementById('importFile');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        document.getElementById('previewSection').style.display = 'none';
+        document.getElementById('importBtn').disabled = true;
+        return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const text = e.target.result;
+            const { headers, rows } = parseCSV(text);
+            
+            const previewTable = document.getElementById('previewTable');
+            let html = '<thead><tr>';
+            headers.forEach(h => html += `<th>${h}</th>`);
+            html += '</tr></thead><tbody>';
+            
+            const previewRows = rows.slice(0, 5);
+            previewRows.forEach(row => {
+                html += '<tr>';
+                headers.forEach(h => html += `<td>${row[h] || ''}</td>`);
+                html += '</tr>';
+            });
+            html += '</tbody>';
+            
+            previewTable.innerHTML = html;
+            document.getElementById('previewSection').style.display = 'block';
+            document.getElementById('importBtn').disabled = rows.length === 0;
+            
+            if (rows.length > 5) {
+                document.getElementById('previewSection').querySelector('h4').textContent = 
+                    `📊 数据预览（前 5 行，共 ${rows.length} 行）`;
+            } else {
+                document.getElementById('previewSection').querySelector('h4').textContent = 
+                    `📊 数据预览（共 ${rows.length} 行）`;
+            }
+        } catch (err) {
+            showToast('CSV 文件解析失败: ' + err.message, 'error');
+            document.getElementById('previewSection').style.display = 'none';
+            document.getElementById('importBtn').disabled = true;
+        }
+    };
+    reader.readAsText(file, 'UTF-8');
+}
+
+async function doImport() {
+    const fileInput = document.getElementById('importFile');
+    const file = fileInput.files[0];
+    
+    if (!file) {
+        showToast('请选择 CSV 文件', 'warning');
+        return;
+    }
+    
+    const importBtn = document.getElementById('importBtn');
+    importBtn.disabled = true;
+    importBtn.textContent = '导入中...';
+    
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('operator_id', currentUserId);
+        
+        const response = await fetch(API_BASE + '/samples/import', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(result.error || '导入失败');
+        }
+        
+        currentImportResult = result;
+        renderImportResult(result);
+        
+        showToast(result.message, result.failure_count > 0 ? 'warning' : 'success');
+        loadAllData();
+        
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        importBtn.disabled = false;
+        importBtn.textContent = '开始导入';
+    }
+}
+
+function renderImportResult(result) {
+    const importResultDiv = document.getElementById('importResult');
+    importResultDiv.style.display = 'block';
+    
+    document.getElementById('resultSummary').innerHTML = `
+        <div class="summary-stats">
+            <div class="stat-item success">
+                <span class="stat-label">成功</span>
+                <span class="stat-value">${result.success_count}</span>
+            </div>
+            <div class="stat-item failure">
+                <span class="stat-label">失败</span>
+                <span class="stat-value">${result.failure_count}</span>
+            </div>
+            <div class="stat-item total">
+                <span class="stat-label">总计</span>
+                <span class="stat-value">${result.total_count}</span>
+            </div>
+        </div>
+        <div class="batch-info">
+            <span>导入批次: <code>${result.import_batch_id}</code></span>
+            <span>操作人: ${result.operator_name}</span>
+        </div>
+    `;
+    
+    if (result.success_count > 0) {
+        document.getElementById('successSection').style.display = 'block';
+        document.getElementById('successCount').textContent = result.success_count;
+        
+        const successTable = document.getElementById('successTable');
+        successTable.innerHTML = `
+            <thead><tr>
+                <th>行号</th>
+                <th>样本号</th>
+                <th>批次号</th>
+                <th>样本类型</th>
+                <th>描述</th>
+            </tr></thead><tbody>
+            ${result.success_items.map(item => `
+                <tr>
+                    <td>${item.row_number}</td>
+                    <td><strong>${item.sample_no}</strong></td>
+                    <td>${item.batch_no}</td>
+                    <td>${item.sample_type}</td>
+                    <td>${item.description || '-'}</td>
+                </tr>
+            `).join('')}
+            </tbody>
+        `;
+    } else {
+        document.getElementById('successSection').style.display = 'none';
+    }
+    
+    if (result.failure_count > 0) {
+        document.getElementById('failureSection').style.display = 'block';
+        document.getElementById('failureCount').textContent = result.failure_count;
+        
+        const failureTable = document.getElementById('failureTable');
+        failureTable.innerHTML = `
+            <thead><tr>
+                <th>行号</th>
+                <th>样本号</th>
+                <th>批次号</th>
+                <th>错误类型</th>
+                <th>错误信息</th>
+            </tr></thead><tbody>
+            ${result.failure_items.map(item => `
+                <tr>
+                    <td>${item.row_number}</td>
+                    <td>${item.sample_no || '-'}</td>
+                    <td>${item.batch_no || '-'}</td>
+                    <td><span class="error-badge">${ERROR_TYPE_NAMES[item.error_type] || item.error_type}</span></td>
+                    <td class="error-message">${item.error_message}</td>
+                </tr>
+            `).join('')}
+            </tbody>
+        `;
+    } else {
+        document.getElementById('failureSection').style.display = 'none';
+    }
+}
+
+function exportImportResult() {
+    if (!currentImportResult) {
+        showToast('没有可导出的导入结果', 'warning');
+        return;
+    }
+    window.open(`${API_BASE}/export/import/${currentImportResult.import_batch_id}`, '_blank');
 }
 
 async function init() {

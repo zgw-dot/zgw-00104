@@ -66,6 +66,7 @@
                     <h3>⚡ 快捷操作</h3>
                     <button class="action-btn primary" onclick="showRegisterModal()">+ 登记新样本</button>
                     <button class="action-btn secondary" onclick="showReceiveModal()">📦 按批次接收</button>
+                    <button class="action-btn success" onclick="showImportModal()">📥 批量导入样本</button>
                 </div>
 
                 <div class="permissions-card">
@@ -229,6 +230,58 @@
                 <div class="form-actions">
                     <button class="action-btn secondary" onclick="closeModal('receiveModal')">取消</button>
                     <button class="action-btn primary" onclick="receiveBatch()">接收</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="importModal">
+        <div class="modal-content large">
+            <div class="modal-header">
+                <h2>批量导入待登记样本</h2>
+                <button class="close-btn" onclick="closeModal('importModal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="import-instructions">
+                    <h4>📋 CSV 格式要求</h4>
+                    <p>CSV 文件至少包含以下列：<strong>样本号</strong>、<strong>批次号</strong>、<strong>样本类型</strong>，可选列：<strong>描述</strong></p>
+                    <p>支持的列名别名：sample_no、batch_no、sample_type、description（大小写不敏感）</p>
+                    <p><a href="#" onclick="downloadTemplate()">⬇️ 下载模板文件</a></p>
+                </div>
+                <div class="form-group">
+                    <label>选择 CSV 文件 *</label>
+                    <input type="file" id="importFile" accept=".csv" onchange="previewImport()">
+                </div>
+                <div class="preview-section" id="previewSection" style="display:none;">
+                    <h4>📊 数据预览（前 5 行）</h4>
+                    <div class="table-container">
+                        <table class="preview-table" id="previewTable"></table>
+                    </div>
+                </div>
+                <div class="import-result" id="importResult" style="display:none;">
+                    <h4>✅ 导入结果</h4>
+                    <div class="result-summary" id="resultSummary"></div>
+                    <div class="result-details">
+                        <div class="success-section" id="successSection" style="display:none;">
+                            <h5>成功记录 (<span id="successCount">0</span>)</h5>
+                            <div class="table-container">
+                                <table class="result-table success" id="successTable"></table>
+                            </div>
+                        </div>
+                        <div class="failure-section" id="failureSection" style="display:none;">
+                            <h5>失败记录 (<span id="failureCount">0</span>)</h5>
+                            <div class="table-container">
+                                <table class="result-table failure" id="failureTable"></table>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="result-actions">
+                        <button class="action-btn small" onclick="exportImportResult()">📤 导出导入审计</button>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button class="action-btn secondary" onclick="closeModal('importModal')">取消</button>
+                    <button class="action-btn primary" id="importBtn" onclick="doImport()" disabled>开始导入</button>
                 </div>
             </div>
         </div>

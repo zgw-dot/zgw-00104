@@ -106,6 +106,23 @@ def init_db():
         c.execute('CREATE INDEX IF NOT EXISTS idx_samples_state ON samples(current_state)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_events_sample ON events(sample_id)')
 
+        c.execute('''CREATE TABLE IF NOT EXISTS import_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_batch_id TEXT NOT NULL,
+            row_number INTEGER,
+            sample_no TEXT,
+            batch_no TEXT,
+            sample_type TEXT,
+            description TEXT,
+            error_type TEXT NOT NULL,
+            error_message TEXT NOT NULL,
+            operator_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (operator_id) REFERENCES users(id)
+        )''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_import_failures_batch ON import_failures(import_batch_id)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_import_failures_sample ON import_failures(sample_no)')
+
 
 def get_current_user(user_id):
     with get_db() as conn:
@@ -144,3 +161,40 @@ def get_previous_valid_state(sample_id):
         if row and row['from_state']:
             return row['from_state']
         return 'REGISTERED'
+
+
+def add_import_failure(import_batch_id, row_number, sample_no, batch_no, sample_type,
+                       description, error_type, error_message, operator_id, conn=None):
+    from datetime import datetime
+    def _do_insert(db_conn):
+        c = db_conn.cursor()
+        c.execute('''INSERT INTO import_failures 
+            (import_batch_id, row_number, sample_no, batch_no, sample_type, description,
+             error_type, error_message, operator_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (import_batch_id, row_number, sample_no, batch_no, sample_type, description,
+             error_type, error_message, operator_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+
+    if conn is not None:
+        _do_insert(conn)
+    else:
+        with get_db() as db_conn:
+            _do_insert(db_conn)
+
+
+def get_import_failures(import_batch_id=None):
+    with get_db() as conn:
+        c = conn.cursor()
+        query = '''
+            SELECT f.*, u.name as operator_name, u.username as operator_username
+            FROM import_failures f
+            LEFT JOIN users u ON f.operator_id = u.id
+        '''
+        params = []
+        if import_batch_id:
+            query += ' WHERE f.import_batch_id = ?'
+            params.append(import_batch_id)
+        query += ' ORDER BY f.id DESC'
+        c.execute(query, params)
+        rows = c.fetchall()
+        return [dict(row) for row in rows]
