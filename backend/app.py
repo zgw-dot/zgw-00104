@@ -701,7 +701,7 @@ def get_transitions():
     return jsonify(result)
 
 
-REQUIRED_COLUMNS = ['样本号', '批次号', '样本类型']
+REQUIRED_COLUMNS = ['样本号', '批次号', '样本类型', '描述']
 COLUMN_ALIASES = {
     '样本号': 'sample_no',
     'sample_no': 'sample_no',
@@ -714,6 +714,7 @@ COLUMN_ALIASES = {
     'sampleType': 'sample_type',
     '描述': 'description',
     'description': 'description',
+    'Description': 'description',
 }
 
 
@@ -752,7 +753,7 @@ def validate_row(normalized, row_number):
             'description': normalized.get('description', ''),
         })
 
-    for col, field in [('批次号', 'batch_no'), ('样本类型', 'sample_type')]:
+    for col, field in [('批次号', 'batch_no'), ('样本类型', 'sample_type'), ('描述', 'description')]:
         val = normalized.get(field, '').strip()
         if not val:
             errors.append({

@@ -146,6 +146,90 @@ def main():
     else:
         results.append(False)
     
+    # ========== 二-新增：描述必填校验 ==========
+    print('\n' + '=' * 80)
+    print('二-新增：描述必填校验测试')
+    print('=' * 80)
+    
+    # 测试1: 空描述值（CSV）
+    csv_data = create_csv_content([
+        ['样本号', '批次号', '样本类型', '描述'],
+        ['IMP-DESC-EMPTY-001', 'BATCH-DESC-001', '血液样本', ''],
+    ])
+    files = {'file': ('test.csv', io.BytesIO(csv_data), 'text/csv')}
+    
+    success, resp = test_case(
+        '空描述值拦截（CSV）',
+        200, 'POST', '/samples/import',
+        data={'operator_id': 1}, files=files,
+        desc='CSV包含空描述值，应该记录为失败'
+    )
+    if success and resp:
+        has_empty_desc = any(f['error_type'] == 'MISSING_REQUIRED' and '描述' in f['error_message'] 
+                        for f in resp.get('failure_items', []))
+        results.append(has_empty_desc)
+        print(f'   包含空描述错误: {"✅ 通过" if has_empty_desc else "❌ 失败"}')
+    else:
+        results.append(False)
+    
+    # 测试2: 缺少描述列（CSV）
+    csv_data = create_csv_content([
+        ['样本号', '批次号', '样本类型'],
+        ['IMP-DESC-MISSCOL-001', 'BATCH-DESC-002', '血液样本'],
+    ])
+    files = {'file': ('test.csv', io.BytesIO(csv_data), 'text/csv')}
+    
+    success, resp = test_case(
+        '缺少描述列拦截（CSV）',
+        200, 'POST', '/samples/import',
+        data={'operator_id': 1}, files=files,
+        desc='CSV缺少描述列，应该记录为失败'
+    )
+    if success and resp:
+        has_missing_desc = any(f['error_type'] == 'MISSING_REQUIRED' and '描述' in f['error_message'] 
+                        for f in resp.get('failure_items', []))
+        results.append(has_missing_desc)
+        print(f'   包含缺描述列错误: {"✅ 通过" if has_missing_desc else "❌ 失败"}')
+    else:
+        results.append(False)
+    
+    # 测试3: JSON缺描述值
+    json_rows = [
+        {'样本号': 'IMP-DESC-JSON-001', '批次号': 'BATCH-DESC-003', '样本类型': '血液样本', '描述': ''},
+    ]
+    
+    success, resp = test_case(
+        '空描述值拦截（JSON）',
+        200, 'POST', '/samples/import',
+        data={'operator_id': 1, 'rows': json_rows},
+        desc='JSON包含空描述值，应该记录为失败'
+    )
+    if success and resp:
+        has_empty_desc_json = any(f['error_type'] == 'MISSING_REQUIRED' and '描述' in f['error_message'] 
+                        for f in resp.get('failure_items', []))
+        results.append(has_empty_desc_json)
+        print(f'   包含空描述错误: {"✅ 通过" if has_empty_desc_json else "❌ 失败"}')
+    else:
+        results.append(False)
+    
+    # 测试4: JSON缺Description别名（带大写D）
+    json_rows_desc = [
+        {'sample_no': 'IMP-DESC-ALIAS-001', 'batch_no': 'BATCH-DESC-004', 'sample_type': '血液样本', 'Description': '正常样本带描述'},
+    ]
+    
+    success, resp = test_case(
+        'Description别名支持（JSON）',
+        200, 'POST', '/samples/import',
+        data={'operator_id': 1, 'rows': json_rows_desc},
+        desc='使用Description别名（大写D），应该成功'
+    )
+    if success and resp:
+        desc_alias_ok = resp.get('success_count') == 1
+        results.append(desc_alias_ok)
+        print(f'   Description别名识别成功: {"✅ 通过" if desc_alias_ok else "❌ 失败"}')
+    else:
+        results.append(False)
+    
     # ========== 三、重复样本号测试 ==========
     print('\n' + '=' * 80)
     print('三、重复样本号检测测试')
@@ -331,12 +415,17 @@ def main():
             has_failure_section = '导入失败记录' in csv_text
             has_batch_id = import_batch_id in csv_text
             
-            export_ok = has_title and has_success_section and has_failure_section and has_batch_id
+            # 验证成功样本的描述不为空
+            success_items_for_export = success_items  # 来自第四节成功导入
+            success_desc_ok = all(item.get('description', '').strip() for item in success_items_for_export)
+            
+            export_ok = has_title and has_success_section and has_failure_section and has_batch_id and success_desc_ok
             results.append(export_ok)
             print(f'   包含标题: {"✅" if has_title else "❌"}')
             print(f'   包含成功区: {"✅" if has_success_section else "❌"}')
             print(f'   包含失败区: {"✅" if has_failure_section else "❌"}')
             print(f'   包含批次号: {"✅" if has_batch_id else "❌"}')
+            print(f'   成功样本描述均非空: {"✅" if success_desc_ok else "❌"}')
             print(f'   结果: {"✅ 通过" if export_ok else "❌ 失败"}')
         else:
             results.append(False)
@@ -357,20 +446,24 @@ def main():
         {'样本号': f'IMP-MIX-{timestamp}-01', '批次号': f'BATCH-MIX-{timestamp}', '样本类型': '血液样本', '描述': '文件内重复失败'},
         {'样本号': 'S001', '批次号': f'BATCH-MIX-{timestamp}', '样本类型': '血液样本', '描述': 'DB重复失败'},
         {'样本号': f'IMP-MIX-{timestamp}-03', '批次号': '', '样本类型': '唾液样本', '描述': '空批次号失败'},
+        {'样本号': f'IMP-MIX-{timestamp}-04', '批次号': f'BATCH-MIX-{timestamp}', '样本类型': '精液样本', '描述': ''},  # 空描述失败
     ]
     
     success, resp = test_case(
-        '部分成功测试（2成功4失败）',
+        '部分成功测试（2成功5失败）',
         200, 'POST', '/samples/import',
         data={'operator_id': 1, 'rows': mix_rows},
-        desc='混合成功和失败场景，验证成功的不丢失（2成功：IMP-MIX-01、IMP-MIX-02；4失败：空样本号、重复、DB重复、空批次号）'
+        desc='混合成功和失败场景，验证成功的不丢失（2成功：IMP-MIX-01、IMP-MIX-02；5失败：空样本号、重复、DB重复、空批次号、空描述）'
     )
     if success and resp:
-        correct_counts = resp.get('success_count') == 2 and resp.get('failure_count') == 4
+        correct_counts = resp.get('success_count') == 2 and resp.get('failure_count') == 5
         error_types = [f['error_type'] for f in resp.get('failure_items', [])]
         has_all_types = ('MISSING_REQUIRED' in error_types and 
                         'DUPLICATE_IN_FILE' in error_types and 
                         'DUPLICATE_IN_DB' in error_types)
+        
+        # 验证失败记录包含空描述错误
+        has_empty_desc = any('描述' in f.get('error_message', '') for f in resp.get('failure_items', []))
         
         # 验证成功的样本确实存在于数据库
         success_items = resp.get('success_items', [])
@@ -381,17 +474,57 @@ def main():
                 all_exist = False
                 break
         
-        atomic_ok = correct_counts and has_all_types and all_exist
+        atomic_ok = correct_counts and has_all_types and all_exist and has_empty_desc
         results.append(atomic_ok)
-        print(f'   计数正确(2成4败): {"✅" if correct_counts else "❌"}')
+        print(f'   计数正确(2成5败): {"✅" if correct_counts else "❌"}')
         print(f'   错误类型齐全: {"✅" if has_all_types else "❌"} {error_types}')
+        print(f'   包含空描述错误: {"✅" if has_empty_desc else "❌"}')
         print(f'   成功样本均存在: {"✅" if all_exist else "❌"}')
         print(f'   结果: {"✅ 通过" if atomic_ok else "❌ 失败"}')
         
         mix_batch_id = resp.get('import_batch_id')
+        mix_success_samples = [item['sample_no'] for item in success_items]
+        mix_failed_samples = [f.get('sample_no', '') for f in resp.get('failure_items', []) if f.get('sample_no', '')]
     else:
         results.append(False)
         mix_batch_id = None
+        mix_success_samples = []
+        mix_failed_samples = []
+    
+    # ========== 八-新增：审计CSV不包含被拒绝样本 ==========
+    print('\n' + '=' * 80)
+    print('八-新增：审计CSV不包含被拒绝样本测试')
+    print('=' * 80)
+    
+    if mix_batch_id and mix_success_samples and mix_failed_samples:
+        status, audit_csv = req('GET', f"/export/import/{mix_batch_id}", parse_json=False)
+        if status == 200 and audit_csv:
+            # 成功样本应该在审计CSV中
+            has_success = all(s in audit_csv for s in mix_success_samples)
+            # 仅在失败列表中、不在成功列表中的样本（即完全被拒绝的样本）不应该出现在成功导入区
+            # 注意：有些样本号可能同时在成功和失败列表中（如文件内重复：第一行成功，第二行失败）
+            only_failed_samples = [s for s in mix_failed_samples if s and s not in mix_success_samples]
+            # 先找到成功区的内容
+            success_section = audit_csv.split('成功导入的样本')[1].split('导入失败记录')[0] if '成功导入的样本' in audit_csv and '导入失败记录' in audit_csv else ''
+            no_rejected_in_success = all(s not in success_section for s in only_failed_samples)
+            
+            audit_clean_ok = has_success and no_rejected_in_success
+            results.append(audit_clean_ok)
+            print(f'   成功样本在审计CSV中: {"✅" if has_success else "❌"}')
+            print(f'   仅失败样本不在成功区: {"✅" if no_rejected_in_success else "❌"}')
+            print(f'   仅失败样本: {only_failed_samples}')
+            print(f'   结果: {"✅ 通过" if audit_clean_ok else "❌ 失败"}')
+            
+            if not no_rejected_in_success:
+                print(f'   所有失败样本: {mix_failed_samples}')
+                print(f'   成功样本: {mix_success_samples}')
+                print(f'   成功区内容: {success_section[:200]}...')
+        else:
+            results.append(False)
+            print('   ❌ 导出导入审计失败')
+    else:
+        results.append(False)
+        print('   ⚠️  跳过，无部分成功测试批次ID')
     
     # ========== 九、重启后一致性测试 ==========
     print('\n' + '=' * 80)
