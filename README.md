@@ -27,6 +27,15 @@
 - ✅ **审计导出**：支持按样本号或批次号导出 CSV 格式审计文件
 - ✅ **导出一致性**：导出文件与界面时间线完全一致
 
+### 批量导入
+- ✅ **批量导入样本**：支持 CSV 文件上传和 JSON API 两种方式批量导入待登记样本
+- ✅ **统一必填校验**：样本号、批次号、样本类型、描述均为必填列，缺描述行仅进入失败明细，不创建样本
+- ✅ **冲突处理**：同一文件内重复样本号、数据库已存在样本号、缺少必填列都给出清楚的失败明细
+- ✅ **原子性保证**：成功记录不因其他行失败而丢失，每行独立处理
+- ✅ **权限控制**：只有有登记权限的用户能导入，越权请求被后端拦截
+- ✅ **失败持久化**：所有失败记录持久化存储，可按批次查询核对
+- ✅ **审计导出**：导入结果可导出 CSV 审计文件，不包含被拒绝样本
+
 ### 界面特性
 - 📊 **待处理统计**：实时显示待处理总数和异常驳回数量
 - 🔍 **多维度筛选**：按批次号、状态筛选待处理样本
@@ -148,6 +157,13 @@ python app.py
 | POST | `/samples/<id>/undo` | 撤销上一步 |
 | POST | `/samples/<id>/re-register` | 重新登记 |
 
+### 批量导入接口
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/samples/import` | 批量导入待登记样本（支持CSV上传和JSON） |
+| GET | `/import/failures` | 查询导入失败记录（按批次筛选） |
+| GET | `/export/import/<batch_id>` | 导出导入结果审计 CSV |
+
 ### 批次接口
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -166,6 +182,263 @@ python app.py
 | GET | `/roles` | 获取角色列表 |
 | GET | `/states` | 获取状态列表 |
 | GET | `/transitions` | 获取状态流转规则 |
+
+## 📦 批量导入 API 详解
+
+### 概述
+批量导入功能支持两种方式：**CSV 文件上传** 和 **JSON API 调用**。导入成功后样本进入「已登记」状态，并自动写入登记事件（含导入批次号）。
+
+> **重要提示**：样本号、批次号、样本类型、描述**均为必填列**。缺描述或缺列的行只会进入失败明细，不会创建样本，也不会污染审计 CSV。同批次中其他合法行仍会正常成功。
+
+---
+
+### 1. POST `/api/samples/import` - 批量导入样本
+
+**用途**：批量导入待登记样本，支持 CSV 文件上传和 JSON 数据两种方式。
+
+**权限**：需要 `register` 权限（admin / operator / reviewer）
+
+#### 方式一：CSV 文件上传
+
+**Content-Type**：`multipart/form-data`
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `file` | File | ✅ | CSV 文件 |
+| `operator_id` | Integer | ✅ | 操作员用户ID |
+
+**CSV 格式要求**：
+```csv
+样本号,批次号,样本类型,描述
+S100,BATCH-2026-004,血液样本,常规体检样本
+S101,BATCH-2026-004,尿液样本,入职体检样本
+```
+
+**支持的列名别名**（大小写不敏感）：
+| 列名 | 别名 |
+|------|------|
+| 样本号 | `sample_no`, `sampleNo` |
+| 批次号 | `batch_no`, `batchNo` |
+| 样本类型 | `sample_type`, `sampleType` |
+| 描述 | `description`, `Description` |
+
+**Curl 示例**：
+```bash
+curl -X POST http://localhost:5000/api/samples/import \
+  -F "operator_id=1" \
+  -F "file=@samples.csv"
+```
+
+**Python requests 示例**：
+```python
+import requests
+import io
+
+csv_content = '''样本号,批次号,样本类型,描述
+TEST-001,BATCH-TEST-001,血液样本,常规体检
+TEST-002,BATCH-TEST-001,尿液样本,入职体检'''
+
+files = {'file': ('test.csv', io.BytesIO(csv_content.encode('utf-8')), 'text/csv')}
+data = {'operator_id': 1}
+r = requests.post('http://localhost:5000/api/samples/import', data=data, files=files)
+print(r.json())
+```
+
+#### 方式二：JSON API
+
+**Content-Type**：`application/json`
+
+**请求体**：
+```json
+{
+  "operator_id": 1,
+  "rows": [
+    {
+      "样本号": "TEST-001",
+      "批次号": "BATCH-TEST-001",
+      "样本类型": "血液样本",
+      "描述": "常规体检"
+    },
+    {
+      "sample_no": "TEST-002",
+      "batch_no": "BATCH-TEST-001",
+      "sample_type": "尿液样本",
+      "Description": "入职体检"
+    }
+  ]
+}
+```
+
+**Curl 示例**：
+```bash
+curl -X POST http://localhost:5000/api/samples/import \
+  -H "Content-Type: application/json" \
+  -d '{
+    "operator_id": 1,
+    "rows": [
+      {"样本号": "TEST-001", "批次号": "BATCH-TEST-001", "样本类型": "血液样本", "描述": "常规体检"},
+      {"样本号": "TEST-002", "批次号": "BATCH-TEST-001", "样本类型": "尿液样本", "描述": ""}
+    ]
+  }'
+```
+
+**Python requests 示例**：
+```python
+import requests
+
+data = {
+    "operator_id": 1,
+    "rows": [
+        {"样本号": "TEST-001", "批次号": "BATCH-TEST-001", "样本类型": "血液样本", "描述": "常规体检"},
+        {"样本号": "TEST-002", "批次号": "BATCH-TEST-001", "样本类型": "尿液样本", "描述": ""}
+    ]
+}
+r = requests.post('http://localhost:5000/api/samples/import', json=data)
+print(r.json())
+```
+
+#### 返回字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `success_count` | Integer | 成功导入的样本数量 |
+| `failure_count` | Integer | 失败的行数量 |
+| `import_batch_id` | String | 导入批次号（用于后续查询和导出） |
+| `success_items` | Array | 成功导入的样本列表 |
+| `success_items[].sample_id` | Integer | 样本ID |
+| `success_items[].sample_no` | String | 样本号 |
+| `success_items[].batch_no` | String | 批次号 |
+| `success_items[].sample_type` | String | 样本类型 |
+| `success_items[].description` | String | 描述 |
+| `failure_items` | Array | 失败记录列表 |
+| `failure_items[].error_type` | String | 错误类型 |
+| `failure_items[].error_message` | String | 错误详情 |
+| `failure_items[].row_number` | Integer | 行号（从2开始，第1行为表头） |
+| `failure_items[].sample_no` | String | 样本号（如果有） |
+| `message` | String | 结果摘要 |
+
+#### 失败明细错误类型
+
+| `error_type` | 说明 |
+|--------------|------|
+| `MISSING_REQUIRED` | 缺少必填列或值为空（包括空样本号、空批次号、空样本类型、空描述） |
+| `DUPLICATE_IN_FILE` | 同一文件内重复样本号（第一条成功，后续重复的失败） |
+| `DUPLICATE_IN_DB` | 数据库中已存在该样本号 |
+
+#### 返回示例（部分成功）
+
+```json
+{
+  "success_count": 1,
+  "failure_count": 1,
+  "import_batch_id": "IMP-20260607210445-ABC123",
+  "success_items": [
+    {
+      "sample_id": 16,
+      "sample_no": "TEST-001",
+      "batch_no": "BATCH-TEST-001",
+      "sample_type": "血液样本",
+      "description": "常规体检"
+    }
+  ],
+  "failure_items": [
+    {
+      "error_type": "MISSING_REQUIRED",
+      "error_message": "缺少必填列或值为空: 描述",
+      "row_number": 3,
+      "sample_no": "TEST-002",
+      "batch_no": "BATCH-TEST-001",
+      "sample_type": "尿液样本",
+      "description": ""
+    }
+  ],
+  "message": "导入完成：成功 1 条，失败 1 条"
+}
+```
+
+---
+
+### 2. GET `/api/import/failures` - 查询导入失败记录
+
+**用途**：按批次查询导入失败记录，用于核对和后续处理。
+
+**参数**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `batch_id` | String | ❌ | 导入批次号（不传则返回所有失败记录） |
+
+**Curl 示例**：
+```bash
+curl "http://localhost:5000/api/import/failures?batch_id=IMP-20260607210445-ABC123"
+```
+
+**Python requests 示例**：
+```python
+import requests
+r = requests.get('http://localhost:5000/api/import/failures', 
+                 params={'batch_id': 'IMP-20260607210445-ABC123'})
+print(r.json())
+```
+
+**返回字段**：
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | Integer | 失败记录ID |
+| `import_batch_id` | String | 导入批次号 |
+| `row_number` | Integer | 行号 |
+| `sample_no` | String | 样本号 |
+| `batch_no` | String | 批次号 |
+| `sample_type` | String | 样本类型 |
+| `description` | String | 描述 |
+| `error_type` | String | 错误类型 |
+| `error_message` | String | 错误详情 |
+| `operator_id` | Integer | 操作员ID |
+| `created_at` | String | 创建时间 |
+
+---
+
+### 3. GET `/api/export/import/<batch_id>` - 导出导入结果审计 CSV
+
+**用途**：导出指定批次的导入结果审计文件，包含成功导入的样本和失败记录。
+
+> **重要**：审计 CSV 的「成功导入的样本」区域**仅包含实际创建成功的样本**，因缺描述等原因被拒绝的样本不会出现在成功区，不会污染审计结果。
+
+**路径参数**：
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `batch_id` | String | ✅ | 导入批次号 |
+
+**Curl 示例**：
+```bash
+curl "http://localhost:5000/api/export/import/IMP-20260607210445-ABC123" \
+  -o import_audit.csv
+```
+
+**Python requests 示例**：
+```python
+import requests
+r = requests.get('http://localhost:5000/api/export/import/IMP-20260607210445-ABC123')
+with open('import_audit.csv', 'w', encoding='utf-8-sig') as f:
+    f.write(r.text)
+```
+
+**导出文件格式**：
+```csv
+批量导入结果审计
+导入批次号,IMP-20260607210445-ABC123
+导入时间,2026-06-07 21:04:45
+操作员,系统管理员
+
+=== 成功导入的样本 ===
+样本ID,样本号,批次号,样本类型,描述,登记人,登记时间
+16,TEST-001,BATCH-TEST-001,血液样本,常规体检,系统管理员,2026-06-07 21:04:45
+
+=== 导入失败记录 ===
+行号,样本号,批次号,样本类型,描述,错误类型,错误信息
+3,TEST-002,BATCH-TEST-001,尿液样本,,MISSING_REQUIRED,缺少必填列或值为空: 描述
+```
+
+---
 
 ## 📊 示例数据说明
 
@@ -197,6 +470,7 @@ python app.py
 
 ## 🧪 测试场景建议
 
+### 基础功能测试
 1. **重复样本号测试**：尝试登记 S001，应被拦截
 2. **跳级归档测试**：用普通操作员账号尝试归档，或直接调用 API 对非复核中样本归档
 3. **空原因驳回测试**：尝试不填原因驳回
@@ -206,6 +480,15 @@ python app.py
 7. **审计导出测试**：导出 S003 审计文件，验证与界面时间线一致
 8. **重启验证**：停止服务后重启，验证状态完整保留
 9. **直接调 API 测试**：使用 curl/postman 尝试越权操作，验证后端拦截
+
+### 批量导入测试
+10. **缺描述 CSV 导入测试**：上传缺描述列或空描述的 CSV，验证仅进入失败明细，不创建样本
+11. **缺描述 JSON 导入测试**：调用 JSON API 传入缺描述的 rows，验证被拦截
+12. **部分成功测试**：同时导入合法行和缺描述行，验证合法行成功、缺描述行失败
+13. **失败查询测试**：按批次查询导入失败记录，验证持久化存储
+14. **审计 CSV 纯净性测试**：导出导入结果审计，验证失败样本不出现在成功区
+15. **越权导入测试**：用无 register 权限的用户尝试导入，验证被拦截
+16. **列名别名测试**：使用 Description、description 等别名，验证正确识别
 
 ## 🛠️ 技术栈
 
@@ -252,6 +535,42 @@ python app.py
 | is_correction | INTEGER | 是否更正事件（0/1） |
 | corrected_event_id | INTEGER FK | 被更正的事件ID |
 | created_at | TEXT | 创建时间 |
+
+### import_failures 表（批量导入失败记录）
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | INTEGER PK | 失败记录ID |
+| import_batch_id | TEXT | 导入批次号 |
+| row_number | INTEGER | 行号 |
+| sample_no | TEXT | 样本号 |
+| batch_no | TEXT | 批次号 |
+| sample_type | TEXT | 样本类型 |
+| description | TEXT | 描述 |
+| error_type | TEXT | 错误类型 |
+| error_message | TEXT | 错误详情 |
+| operator_id | INTEGER FK | 操作者ID |
+| created_at | TEXT | 创建时间 |
+
+## ✅ 文档回归检查
+
+为了防止接口行为与文档示例不一致，提供了自动化回归检查脚本：
+
+```bash
+# 运行回归检查，验证所有 README 示例与真实接口一致
+python validate_readme_examples.py
+```
+
+**检查内容**：
+- CSV 上传示例的返回字段与文档一致
+- CSV 缺描述列仅进入失败明细，不创建样本
+- JSON API 示例的返回字段与文档一致
+- JSON 空描述值仅进入失败明细，不创建样本
+- 部分成功场景：合法行成功，缺描述行失败，成功不丢失
+- 失败查询接口返回字段与文档一致
+- 审计CSV不包含被拒绝样本，不污染审计结果
+- 所有返回字段（success_items、failure_items）与文档一致
+- `Description` 别名正确识别
+- 错误类型（MISSING_REQUIRED）与文档一致
 
 ## 📄 许可证
 
